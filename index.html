@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>童年记忆</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; }
+
+.page {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw; height: 100vh;
+    background: #000;
+}
+
+/* 图片容器（JS 定位到透明区域边界框） */
+.swap-wrap {
+    position: absolute;
+    z-index: 1;
+    overflow: hidden;
+    pointer-events: none;
+}
+.swap-wrap img {
+    width: 100%; height: 100%;
+    object-fit: contain;
+    display: block;
+    pointer-events: none;
+}
+
+/* 悬停指示层（用 base64 data URL 避免 Edge file:// 限制） */
+.hover-glow {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    z-index: 2;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.25s;
+    background: rgba(255,255,255,0.15);
+    -webkit-mask-image: var(--hm);
+    -webkit-mask-size: 100% 100%;
+    mask-image: var(--hm);
+    mask-size: 100% 100%;
+}
+.hover-glow.show { opacity: 1; }
+
+/* 带透明区域的背景 PNG（在 hover-glow 之上） */
+.bg-overlay {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+    z-index: 3;
+    pointer-events: none;
+}
+
+#loadingTip {
+    position: fixed; bottom: 20px; left: 50%;
+    transform: translateX(-50%); z-index: 100;
+    color: rgba(255,255,255,0.7); font-size: 14px;
+    background: rgba(0,0,0,0.5); padding: 6px 18px;
+    border-radius: 20px; pointer-events: none;
+    opacity: 1; transition: opacity 0.5s;
+}
+#loadingTip.hide { opacity: 0; }
+</style>
+</head>
+<body>
+
+<div class="page" id="page">
+    <div class="swap-wrap" id="swapWrap">
+        <img id="swapImg" src="assets/images/1.png" alt="">
+    </div>
+    <div class="hover-glow" id="hoverGlow"></div>
+    <img class="bg-overlay" id="bgOverlay" src="assets/background.png" alt="">
+</div>
+
+<div id="loadingTip">🎯 加载中...</div>
+
+<!-- 预计算数据（由 PowerShell 扫描生成，无需 Canvas） -->
+<script src="assets/mask_box.js"></script>
+
+<script>
+// ===================== 配置 =====================
+const ITEMS = [
+    { image: 'assets/images/1.png', music: 'assets/music/1.mp3' },
+    { image: 'assets/images/2.png', music: 'assets/music/2.mp3' },
+];
+
+// ===================== 状态 =====================
+let curIdx = 0;
+let audio = null;
+let isOK = false;
+
+const page = document.getElementById('page');
+const wrap = document.getElementById('swapWrap');
+const simg = document.getElementById('swapImg');
+const hglow = document.getElementById('hoverGlow');
+const tip = document.getElementById('loadingTip');
+
+// ===================== 悬停遮罩 =====================
+// 从 mask_box.js 获取预计算的 base64 悬停遮罩
+if (typeof HOVER_MASK !== 'undefined') {
+    page.style.setProperty('--hm', 'url("' + HOVER_MASK + '")');
+}
+
+// ===================== 定位 =====================
+function pose() {
+    if (!MASK_BOX) return;
+    const { x, y, w, h, bgW, bgH } = MASK_BOX;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const sc = Math.max(vw / bgW, vh / bgH);
+    const ox = (vw - bgW * sc) / 2;
+    const oy = (vh - bgH * sc) / 2;
+    wrap.style.left   = (ox + x * sc) + 'px';
+    wrap.style.top    = (oy + y * sc) + 'px';
+    wrap.style.width  = (w * sc) + 'px';
+    wrap.style.height = (h * sc) + 'px';
+}
+
+// ===================== 点击检测（用预计算的边界框 + 像素级 hover_mask）=====
+// 注意：Edge 在 file:// 下 CSS mask-image 也可能被阻止加载本地文件
+// 所以悬停指示改用 CSS 变量+base64（由 hover_mask 生成）
+// 点击检测则用边界框粗筛 + 空降级
+
+function isInBox(cx, cy) {
+    if (!MASK_BOX) return true;
+    const { x, y, w, h, bgW, bgH } = MASK_BOX;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const sc = Math.max(vw / bgW, vh / bgH);
+    const ox = (vw - bgW * sc) / 2;
+    const oy = (vh - bgH * sc) / 2;
+    const px = (cx - ox) / sc;
+    const py = (cy - oy) / sc;
+    return px >= x && px <= x + w && py >= y && py <= y + h;
+}
+
+// ===================== 悬停更新 =====================
+function onMove(e) {
+    if (!isOK) return;
+    const hit = isInBox(e.clientX, e.clientY);
+    page.style.cursor = hit ? 'pointer' : 'default';
+    hglow.classList.toggle('show', hit);
+}
+
+// ===================== 切换 =====================
+function next() {
+    const n = ITEMS.length;
+    if (n < 2) return;
+    let i;
+    do { i = Math.floor(Math.random() * n); } while (i === curIdx);
+    curIdx = i;
+    simg.src = ITEMS[i].image;
+    if (audio) { audio.pause(); audio.src = ''; audio = null; }
+    const a = new Audio(ITEMS[i].music);
+    audio = a;
+    a.play().catch(() => {});
+}
+
+// ===================== 事件绑定 =====================
+page.addEventListener('click', e => {
+    if (!isOK || !isInBox(e.clientX, e.clientY)) return;
+    next();
+});
+page.addEventListener('mousemove', onMove);
+page.addEventListener('mouseleave', () => {
+    page.style.cursor = 'default';
+    hglow.classList.remove('show');
+});
+window.addEventListener('resize', pose);
+
+// ===================== 启动 =====================
+// 等待 MASK_BOX 加载完毕（来自 mask_box.js）
+function start() {
+    pose();
+    setTimeout(pose, 100);
+    setTimeout(pose, 500);
+    isOK = true;
+    tip.textContent = '🖼️ 点击透明区域！';
+    setTimeout(() => tip.classList.add('hide'), 3000);
+}
+
+// 如果 MASK_BOX 已加载则立即执行，否则等待
+if (typeof MASK_BOX !== 'undefined') {
+    start();
+} else {
+    // 极罕见情况：mask_box.js 未加载，用 Canvas 检测屏幕方式（读者不需要）
+    document.addEventListener('DOMContentLoaded', () => {
+        // 尝试创建一个全尺寸的默认值
+        const img = document.getElementById('bgOverlay');
+        if (img.complete && img.naturalWidth) {
+            window.MASK_BOX = { x:0, y:0, w: img.naturalWidth, h: img.naturalHeight, bgW: img.naturalWidth, bgH: img.naturalHeight };
+            start();
+        } else {
+            img.onload = () => {
+                window.MASK_BOX = { x:0, y:0, w: img.naturalWidth, h: img.naturalHeight, bgW: img.naturalWidth, bgH: img.naturalHeight };
+                start();
+            };
+        }
+    });
+}
+</script>
+</body>
+</html>
+</script>
+</body>
+</html>
