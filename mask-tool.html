@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>遮罩位置调整工具</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: system-ui, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            position: relative;
+        }
+
+        /* ===== 顶部工具栏（浮在 canvas 上方） ===== */
+        .toolbar {
+            background: #16213e;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+            border-bottom: 2px solid #0f3460;
+            position: relative;
+            z-index: 200;
+        }
+        .toolbar h1 {
+            font-size: 18px;
+            white-space: nowrap;
+            margin-right: 10px;
+        }
+        .toolbar label {
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+        }
+        .toolbar input[type="file"] {
+            display: none;
+        }
+        .toolbar .btn {
+            background: #0f3460;
+            color: #eee;
+            border: none;
+            padding: 6px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: background 0.2s;
+            white-space: nowrap;
+        }
+        .toolbar .btn:hover { background: #1a5276; }
+        .toolbar .btn.primary { background: #e94560; }
+        .toolbar .btn.primary:hover { background: #c73a52; }
+        .toolbar .btn.success { background: #2d8a4e; }
+        .toolbar .btn.success:hover { background: #236e3e; }
+        .toolbar .size-control {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 13px;
+        }
+        .toolbar .size-control input[type="range"] {
+            width: 100px;
+            accent-color: #e94560;
+        }
+        .toolbar .size-control .val {
+            min-width: 40px;
+            text-align: center;
+        }
+
+        /* ===== 状态信息 ===== */
+        .status-bar {
+            background: #0d1b2a;
+            padding: 6px 20px;
+            font-size: 12px;
+            color: #8899aa;
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            position: relative;
+            z-index: 200;
+        }
+        .status-bar .hint {
+            color: #e94560;
+        }
+
+        /* ===== 画布区（铺满全屏，与 index.html 的 background-size: cover 保持一致） ===== */
+        .canvas-wrap {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 0;
+            overflow: hidden;
+            background-color: #0d1b2a;
+            background-position: center center;
+            background-repeat: no-repeat;
+            background-size: cover;
+        }
+
+        /* ===== 遮罩层（可拖拽） ===== */
+        #maskOverlay {
+            position: absolute;
+            top: 30%;
+            left: 30%;
+            width: 40%;
+            /* 高度由 aspect-ratio 自动计算，保持原始比例 */
+            height: auto;
+            cursor: grab;
+            display: none;
+            z-index: 10;
+            touch-action: none;
+        }
+        #maskOverlay.show { display: block; }
+        #maskOverlay.dragging { cursor: grabbing; }
+
+        #maskOverlay .mask-display {
+            width: 100%;
+            height: 100%;
+            position: relative;
+        }
+
+        /* 方法：两层叠加 */
+        #maskOverlay .mask-fill {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            object-fit: fill;
+            pointer-events: none;
+            -webkit-user-drag: none;
+        }
+        /* 底图：高亮色 */
+        #maskOverlay .mask-fill.color {
+            z-index: 1;
+            opacity: 0.5;
+            background: #e94560;
+        }
+        /* 上层：用 mask 裁剪显示 */
+        #maskOverlay .mask-fill.clip {
+            z-index: 2;
+
+            -webkit-mask-image: var(--mask-url);
+            -webkit-mask-size: 100% 100%;
+            -webkit-mask-mode: alpha;
+            mask-image: var(--mask-url);
+            mask-size: 100% 100%;
+            mask-mode: alpha;
+        }
+        /* 默认显示一个半透明红色填充来指示区域 */
+        #maskOverlay .mask-fill.color-img {
+            z-index: 1;
+            opacity: 0.45;
+        }
+
+        /* 边框指示 */
+        #maskOverlay .border-indicator {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            border: 2px dashed rgba(233, 69, 96, 0.7);
+            pointer-events: none;
+            z-index: 3;
+            box-sizing: border-box;
+        }
+
+        /* 拖拽把手 */
+        #maskOverlay .drag-handle {
+            position: absolute;
+            bottom: -8px;
+            right: -8px;
+            width: 16px;
+            height: 16px;
+            background: #e94560;
+            border: 2px solid #fff;
+            border-radius: 2px;
+            cursor: nwse-resize;
+            z-index: 4;
+            pointer-events: all;
+        }
+
+        /* ===== 导出面板 ===== */
+        .export-panel {
+            background: #16213e;
+            border-top: 2px solid #0f3460;
+            padding: 12px 20px;
+            display: none;
+            flex-direction: column;
+            gap: 8px;
+            position: relative;
+            z-index: 200;
+        }
+        .export-panel.show { display: flex; }
+
+        .export-panel .row {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .export-panel code {
+            background: #0d1b2a;
+            padding: 8px 14px;
+            border-radius: 6px;
+            font-size: 14px;
+            flex: 1;
+            min-width: 200px;
+            user-select: all;
+            border: 1px solid #0f3460;
+        }
+        .export-panel .copy-ok {
+            color: #2d8a4e;
+            font-size: 13px;
+        }
+
+        /* ===== 引导提示 ===== */
+        .welcome {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: #667788;
+            z-index: 1;
+            pointer-events: none;
+        }
+        .welcome h2 {
+            font-size: 24px;
+            margin-bottom: 10px;
+            color: #8899aa;
+        }
+        .welcome p { font-size: 14px; }
+
+        /* 响应式 */
+        @media (max-width: 700px) {
+            .toolbar { padding: 10px 12px; gap: 10px; }
+            .toolbar h1 { font-size: 15px; }
+            .toolbar .size-control input[type="range"] { width: 70px; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- ===== 工具栏 ===== -->
+    <div class="toolbar">
+        <h1>🎯 遮罩定位工具</h1>
+
+        <label class="btn">
+            🖼 导入背景
+            <input type="file" id="bgInput" accept="image/*">
+        </label>
+
+        <label class="btn">
+            🎭 导入遮罩
+            <input type="file" id="maskInput" accept="image/png,image/*">
+        </label>
+
+        <div class="size-control">
+            <span>大小</span>
+            <input type="range" id="sizeSlider" min="5" max="100" value="40">
+            <span class="val" id="sizeVal">40%</span>
+        </div>
+
+        <button class="btn" id="resetBtn">↺ 重置位置</button>
+        <button class="btn primary" id="exportBtn">📋 导出位置</button>
+    </div>
+
+    <!-- ===== 状态栏 ===== -->
+    <div class="status-bar">
+        <span id="bgStatus">背景：未导入</span>
+        <span id="maskStatus">遮罩：未导入</span>
+        <span id="posStatus">位置：—</span>
+        <span id="dragHint" class="hint">← 拖拽遮罩调整位置，滑块调大小</span>
+    </div>
+
+    <!-- ===== 画布 ===== -->
+    <div class="canvas-wrap" id="canvasWrap">
+        <div class="welcome" id="welcome">
+            <h2>🎯 遮罩定位工具</h2>
+            <p>上方导入背景图和遮罩图，然后拖拽遮罩到目标位置</p>
+            <p style="margin-top:6px;font-size:12px;">完成后点击「导出位置」获取 CSS 代码</p>
+        </div>
+
+        <div id="maskOverlay">
+            <div class="mask-display">
+                <!-- 彩色填充 + 遮罩裁剪 -->
+                <img class="mask-fill color-img" id="maskFillColor" src="" alt="">
+                <div class="mask-fill clip" id="maskClipLayer"></div>
+                <div class="border-indicator"></div>
+            </div>
+            <div class="drag-handle" id="dragHandle"></div>
+        </div>
+    </div>
+
+    <!-- ===== 导出面板 ===== -->
+    <div class="export-panel" id="exportPanel">
+        <div class="row">
+            <span style="font-size:13px;">将这段 CSS <strong>完整替换</strong> <code>index.html</code> 的 <code>.interactive-area</code>：<br>（外部容器 .bg-container 已固定，这块用 <code>position: absolute</code> 自动对齐）</span>
+        </div>
+        <div class="row">
+            <code id="exportCode">/* 先导入图片再导出 */</code>
+            <button class="btn success" id="copyBtn">📋 复制</button>
+            <span class="copy-ok" id="copyOk" style="display:none;">✅ 已复制</span>
+        </div>
+        <div class="row" style="font-size:12px;color:#8899aa;">
+            <span>💡 提示：百分比值是相对于视口的，在任何屏幕上都自动适配</span>
+        </div>
+    </div>
+
+    <script>
+        // ================================================================
+        //  状态
+        // ================================================================
+        const state = {
+            bgLoaded: false,
+            maskLoaded: false,
+            maskSrc: null,
+            maskNaturalW: 0,
+            maskNaturalH: 0,
+            // 位置（百分比）
+            topPct: 30,
+            leftPct: 30,
+            widthPct: 40,
+            // 拖拽
+            dragging: false,
+            resizeMode: false,
+            dragStartX: 0,
+            dragStartY: 0,
+            dragStartTop: 0,
+            dragStartLeft: 0,
+            dragStartW: 0,
+            dragStartH: 0,
+        };
+
+        // ================================================================
+        //  DOM
+        // ================================================================
+        const bgInput = document.getElementById('bgInput');
+        const maskInput = document.getElementById('maskInput');
+        const canvasWrap = document.getElementById('canvasWrap');
+        const maskOverlay = document.getElementById('maskOverlay');
+        const maskFillColor = document.getElementById('maskFillColor');
+        const maskClipLayer = document.getElementById('maskClipLayer');
+        const dragHandle = document.getElementById('dragHandle');
+        const welcome = document.getElementById('welcome');
+        const sizeSlider = document.getElementById('sizeSlider');
+        const sizeVal = document.getElementById('sizeVal');
+        const resetBtn = document.getElementById('resetBtn');
+        const exportBtn = document.getElementById('exportBtn');
+        const exportPanel = document.getElementById('exportPanel');
+        const exportCode = document.getElementById('exportCode');
+        const copyBtn = document.getElementById('copyBtn');
+        const copyOk = document.getElementById('copyOk');
+
+        const bgStatus = document.getElementById('bgStatus');
+        const maskStatus = document.getElementById('maskStatus');
+        const posStatus = document.getElementById('posStatus');
+        const dragHint = document.getElementById('dragHint');
+
+        // ================================================================
+        //  更新显示
+        // ================================================================
+        function updateMaskPosition() {
+            maskOverlay.style.top = state.topPct + '%';
+            maskOverlay.style.left = state.leftPct + '%';
+            maskOverlay.style.width = state.widthPct + '%';
+            // 用 aspect-ratio 保持原始比例，高度自动计算
+            if (state.maskNaturalW > 0 && state.maskNaturalH > 0) {
+                maskOverlay.style.aspectRatio = state.maskNaturalW + ' / ' + state.maskNaturalH;
+            }
+            updateStatus();
+        }
+
+        function updateSizeDisplay() {
+            sizeVal.textContent = state.widthPct + '%';
+        }
+
+        function updateStatus() {
+            if (state.bgLoaded && state.maskLoaded) {
+                const ratio = state.maskNaturalW / state.maskNaturalH;
+                const displayH = state.widthPct / ratio;
+                posStatus.textContent =
+                    `位置：top=${state.topPct.toFixed(1)}%  left=${state.leftPct.toFixed(1)}%  ` +
+                    `宽=${state.widthPct.toFixed(1)}% 高=${displayH.toFixed(1)}%  ` +
+                    `| 遮罩比例 ${state.maskNaturalW}×${state.maskNaturalH} (${ratio.toFixed(2)})`;
+            }
+        }
+
+        function updateExportCode() {
+            const ratio = state.maskNaturalW / state.maskNaturalH;
+            const code =
+`/* ===== 遮罩定位参数（由 mask-tool.html 生成） ===== */
+/* 遮罩原始尺寸: ${state.maskNaturalW}×${state.maskNaturalH}
+   宽高比: ${ratio.toFixed(4)}  生成时间: ${new Date().toLocaleString()} */
+
+.interactive-area {
+    position: absolute;
+    top: ${state.topPct.toFixed(2)}%;
+    left: ${state.leftPct.toFixed(2)}%;
+    width: ${state.widthPct.toFixed(2)}%;
+    /* ★ 高度由 aspect-ratio 按遮罩原始比例自动计算，不会被压扁 */
+    height: auto;
+    aspect-ratio: ${state.maskNaturalW} / ${state.maskNaturalH};
+    cursor: default;
+}
+
+/* 提示：替换掉 index.html 中 .interactive-area 的样式块即可 */`;
+            exportCode.textContent = code;
+        }
+
+        // ================================================================
+        //  加载图片
+        // ================================================================
+        bgInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                // 与 index.html 保持一致：background-size: cover
+                canvasWrap.style.backgroundImage = `url("${ev.target.result}")`;
+                state.bgLoaded = true;
+                bgStatus.textContent = `背景：${file.name} (已加载)`;
+                welcome.style.display = 'none';
+                checkReady();
+            };
+            reader.readAsDataURL(file);
+        });
+
+        maskInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                const dataUrl = ev.target.result;
+
+                // 获取原始尺寸
+                const img = new Image();
+                img.onload = () => {
+                    state.maskNaturalW = img.naturalWidth;
+                    state.maskNaturalH = img.naturalHeight;
+
+                    state.maskSrc = dataUrl;
+
+                    // 填充彩色底图
+                    maskFillColor.src = dataUrl;
+
+                    // 用 CSS 变量设置 mask
+                    maskClipLayer.style.setProperty('--mask-url', `url("${dataUrl}")`);
+                    // 给 clip 层一个可见的半透明色
+                    maskClipLayer.style.background = 'rgba(233, 69, 96, 0.4)';
+
+                    maskOverlay.classList.add('show');
+                    state.maskLoaded = true;
+                    maskStatus.textContent =
+                        `遮罩：${file.name} (${img.naturalWidth}×${img.naturalHeight})`;
+
+                    // 根据遮罩比例调整初始大小
+                    adjustInitialSize();
+
+                    checkReady();
+                };
+                img.src = dataUrl;
+            };
+            reader.readAsDataURL(file);
+        });
+
+        function adjustInitialSize() {
+            if (!state.bgLoaded) return;
+
+            // 根据遮罩宽高比设置初始大小（相对视口）
+            const ratio = state.maskNaturalW / state.maskNaturalH;
+            // 目标：遮罩占视口短边的 40%
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            const targetPct = 40; // %
+
+            let wPct;
+            if (vw / vh > ratio) {
+                // 视口更宽 → 高度受限
+                wPct = targetPct * ratio;
+            } else {
+                // 视口更高 → 宽度受限
+                wPct = targetPct;
+            }
+
+            state.widthPct = Math.round(wPct * 10) / 10;
+            state.heightPct = 0; // 不再使用，由 aspect-ratio 决定
+            // 居中放置
+            state.leftPct = Math.round((100 - state.widthPct) / 2 * 10) / 10;
+            state.topPct = Math.round((100 - state.widthPct / ratio) / 2 * 10) / 10;
+
+            sizeSlider.value = state.widthPct;
+            updateSizeDisplay();
+            updateMaskPosition();
+            updateExportCode();
+        }
+
+        function checkReady() {
+            if (state.bgLoaded && state.maskLoaded) {
+                exportPanel.classList.add('show');
+                updateExportCode();
+                updateMaskPosition();
+            }
+        }
+
+        // ================================================================
+        //  大小滑块
+        // ================================================================
+        sizeSlider.addEventListener('input', () => {
+            if (!state.maskLoaded) return;
+
+            const pct = parseFloat(sizeSlider.value);
+            sizeVal.textContent = pct + '%';
+
+            // 只控制宽度，高度由 aspect-ratio 自动保持原始比例
+            state.widthPct = pct;
+
+            updateMaskPosition();
+            updateExportCode();
+        });
+
+        // ================================================================
+        //  拖拽移动（遮罩主体）
+        // ================================================================
+        function startDrag(e, isResize) {
+            if (!state.maskLoaded) return;
+            const ev = e.touches ? e.touches[0] : e;
+            state.dragging = true;
+            state.resizeMode = !!isResize;
+            state.dragStartX = ev.clientX;
+            state.dragStartY = ev.clientY;
+            state.dragStartTop = state.topPct;
+            state.dragStartLeft = state.leftPct;
+            state.dragStartW = state.widthPct;
+            state.dragStartH = state.heightPct;
+            maskOverlay.classList.add('dragging');
+            e.preventDefault?.();
+        }
+
+        function onDrag(e) {
+            if (!state.dragging) return;
+            const ev = e.touches ? e.touches[0] : e;
+            const dx = ev.clientX - state.dragStartX;
+            const dy = ev.clientY - state.dragStartY;
+
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+
+            if (state.resizeMode) {
+                // 调整大小（只设宽度，高度由 aspect-ratio 自动保持比例）
+                // 使用 dx 和 dy 中变化大的那个
+                const dSize = Math.max(
+                    (dx / vw) * 100,
+                    (dy / vh) * 100
+                );
+                let newW = Math.max(5, Math.min(95, state.dragStartW + dSize));
+                state.widthPct = Math.round(newW * 10) / 10;
+                sizeSlider.value = Math.round(state.widthPct);
+                sizeVal.textContent = state.widthPct + '%';
+            } else {
+                // 移动
+                let newLeft = state.dragStartLeft + (dx / vw) * 100;
+                let newTop = state.dragStartTop + (dy / vh) * 100;
+                // 允许拖出边界（用户可能是想对齐边缘）
+                state.leftPct = Math.round(newLeft * 10) / 10;
+                state.topPct = Math.round(newTop * 10) / 10;
+            }
+
+            updateMaskPosition();
+            updateExportCode();
+            e.preventDefault?.();
+        }
+
+        function endDrag() {
+            state.dragging = false;
+            maskOverlay.classList.remove('dragging');
+        }
+
+        // 鼠标事件
+        maskOverlay.addEventListener('mousedown', (e) => {
+            if (e.target === dragHandle) return;
+            startDrag(e, false);
+        });
+        dragHandle.addEventListener('mousedown', (e) => {
+            startDrag(e, true);
+        });
+        document.addEventListener('mousemove', onDrag);
+        document.addEventListener('mouseup', endDrag);
+
+        // 触摸事件
+        maskOverlay.addEventListener('touchstart', (e) => {
+            if (e.target === dragHandle) return;
+            startDrag(e, false);
+        }, { passive: false });
+        dragHandle.addEventListener('touchstart', (e) => {
+            startDrag(e, true);
+        }, { passive: false });
+        document.addEventListener('touchmove', onDrag, { passive: false });
+        document.addEventListener('touchend', endDrag);
+
+        // ================================================================
+        //  重置
+        // ================================================================
+        resetBtn.addEventListener('click', () => {
+            if (!state.maskLoaded) return;
+            adjustInitialSize();
+            updateExportCode();
+        });
+
+        // ================================================================
+        //  导出 & 复制
+        // ================================================================
+        exportBtn.addEventListener('click', () => {
+            updateExportCode();
+            exportPanel.classList.add('show');
+            exportCode.scrollIntoView({ behavior: 'smooth' });
+        });
+
+        copyBtn.addEventListener('click', async () => {
+            try {
+                await navigator.clipboard.writeText(exportCode.textContent);
+                copyOk.style.display = 'inline';
+                setTimeout(() => { copyOk.style.display = 'none'; }, 2000);
+            } catch {
+                // 降级
+                exportCode.select();
+                document.execCommand('copy');
+                copyOk.style.display = 'inline';
+                setTimeout(() => { copyOk.style.display = 'none'; }, 2000);
+            }
+        });
+
+        // ================================================================
+        //  窗口变化时更新
+        // ================================================================
+        window.addEventListener('resize', () => {
+            updateExportCode();
+        });
+
+        console.log('✅ 遮罩定位工具已加载');
+    </script>
+</body>
+</html>
